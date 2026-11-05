@@ -1,7 +1,7 @@
 # HyperOptimizer Python tracking
 
 Python 3.10+ with no runtime dependencies. All SDK calls use the new `/graphql`
-endpoint; there is no REST or old-API fallback. Install the published package (after its first release), or use `pip install .` from this repository:
+endpoint; there is no REST or old-API fallback. Install the published package, or use `pip install .` from this repository:
 
 ```sh
 pip install hyperoptimizer==0.1.0
@@ -12,7 +12,7 @@ export HYPEROPTIMIZER_API_TOKEN=ho_your_org_token
 ```
 
 The default deployment target is `https://graphql.hyperoptimizer.com/graphql`.
-The first public package release is pending. Both an origin and an explicit
+Version 0.1.0 is available on [PyPI](https://pypi.org/project/hyperoptimizer/0.1.0/). Both an origin and an explicit
 `/graphql` endpoint are accepted. Remote public endpoints require HTTPS; loopback
 HTTP is supported. Tokens and caller-provided organization headers do not select
 arbitrary organizations: the server derives ownership from the verified credential.
