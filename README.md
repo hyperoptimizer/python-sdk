@@ -1,3 +1,5 @@
+![HyperOptimizer — Python SDK](https://raw.githubusercontent.com/hyperoptimizer/python-sdk/main/.github/assets/readme-header.png)
+
 # HyperOptimizer Python SDK
 
 [![PyPI](https://img.shields.io/pypi/v/hyperoptimizer)](https://pypi.org/project/hyperoptimizer/)
@@ -235,4 +237,4 @@ Report bugs and request features through
 
 ## License
 
-[MIT](LICENSE) © Hyperoptimizer.
+[MIT](LICENSE) © HyperOptimizer.
