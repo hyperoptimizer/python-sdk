@@ -1,0 +1,74 @@
+query SDKIdentity {
+  cliIdentity {
+    organizationId
+  }
+}
+mutation SDKCreateProject($input: CreateProjectInput!) {
+  createProject(input: $input) {
+    id
+    name
+    organizationId
+  }
+}
+mutation SDKEnsureExperiment($input: CreateTrackingExperimentInput!) {
+  ensureTrackingExperiment(input: $input) {
+    id
+  }
+}
+mutation SDKCreateRun($input: TrackingRunCreateInput!) {
+  createTrackingRun(input: $input) {
+    id
+    projectId
+    experimentId
+    url
+    status
+    finalizationState
+  }
+}
+mutation SDKResume($input: TrackingWriterInput!) {
+  resumeTrackingRun(input: $input) {
+    id
+    projectId
+    experimentId
+    url
+    status
+    finalizationState
+  }
+}
+mutation SDKBind {
+  bindManagedTrackingRun {
+    id
+    projectId
+    experimentId
+    url
+    status
+    finalizationState
+  }
+}
+mutation SDKHeartbeat($input: TrackingWriterInput!) {
+  heartbeatTrackingRun(input: $input) {
+    id
+    projectId
+    experimentId
+    url
+    status
+    finalizationState
+  }
+}
+mutation SDKIngest($input: IngestRunEventsInput!) {
+  ingestRunEvents(input: $input) {
+    requestId
+    accepted
+    duplicates
+  }
+}
+mutation SDKComplete($input: TrackingCompleteInput!) {
+  completeTrackingRun(input: $input) {
+    id
+    projectId
+    experimentId
+    url
+    status
+    finalizationState
+  }
+}

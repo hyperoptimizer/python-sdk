@@ -1,0 +1,27 @@
+[project]
+name = "hyperoptimizer"
+version = "0.1.0"
+description = "Python experiment tracking for HyperOptimizer"
+requires-python = ">=3.10"
+readme = "README.md"
+dependencies = []
+license = {file = "LICENSE"}
+authors = [{name = "Hyperoptimizer"}]
+keywords = ["optimization", "experiment-tracking"]
+
+[project.urls]
+Repository = "https://github.com/hyperoptimizer/python-sdk"
+Issues = "https://github.com/hyperoptimizer/python-sdk/issues"
+Homepage = "https://hyperoptimizer.com"
+Documentation = "https://docs.hyperoptimizer.com/guides/python-tracking"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+hyperoptimizer = ["py.typed", "operations.graphql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
