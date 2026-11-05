@@ -5,17 +5,22 @@ from __future__ import annotations
 import json
 import math
 import os
+import platform
 import random
+import ssl
 import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from urllib.error import HTTPError, URLError
+from types import TracebackType
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+import httpx
 
 from hyperoptimizer._documents import OPERATIONS, TrackingOperation
+from hyperoptimizer._version import __version__
 
+CLIENT_NAME = "hyperoptimizer-python"
 MAX_REQUEST_BYTES = 1_048_576
 
 
@@ -53,9 +58,17 @@ class TrackingError(RuntimeError):
         self.code = code
 
 
-class _NoRedirects(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
+class _RequestFailure(TrackingError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        code: str | None = None,
+        retry_after: float | None = None,
+    ) -> None:
+        super().__init__(message, status=status, code=code)
+        self.retry_after = retry_after
 
 
 def _retry_after(value: object) -> float | None:
@@ -106,7 +119,27 @@ class Transport:
         if not self.token.strip():
             raise ValueError("Set HYPEROPTIMIZER_API_TOKEN or pass api_token")
         self._scheme = "Tracking" if managed else "Bearer"
-        self._opener = build_opener(_NoRedirects())
+        self._user_agent = f"{CLIENT_NAME}/{__version__}/{platform.system() or 'unknown'}".lower()
+        # Preserve urllib's platform/OpenSSL trust configuration and environment proxies.
+        self._client = httpx.Client(
+            verify=ssl.create_default_context(),
+            follow_redirects=False,
+            limits=httpx.Limits(max_connections=2, max_keepalive_connections=2),
+        )  # HTTPX transport retries default to zero; the SDK owns retries.
+
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self) -> Transport:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
 
     def request(
         self,
@@ -117,7 +150,7 @@ class Transport:
         retry: bool = True,
         event_payloads: list[bytes] | None = None,
     ) -> dict[str, object]:
-        field, document, has_input = OPERATIONS[operation]
+        _, document, has_input = OPERATIONS[operation]
         variables = {"input": body} if has_input else {}
         if event_payloads is None:
             payload = encode_json(
@@ -140,96 +173,106 @@ class Transport:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TrackingError("Timed out waiting for tracking acknowledgment")
-            request = Request(
-                self.url,
-                data=payload,
-                headers={
-                    "Authorization": self._scheme + " " + self.token,
-                    "Content-Type": "application/json",
-                    "Accept": "application/graphql-response+json, application/json",
-                    "User-Agent": "hyperoptimizer-python/0.1.0",
-                },
-                method="POST",
-            )
             wait = delay * random.uniform(0.8, 1.2)
-            failure: TrackingError | None = None
             try:
-                with self._opener.open(request, timeout=min(10, remaining)) as response:
-                    result = json.load(response)
-                if not isinstance(result, dict):
-                    raise TrackingError("Invalid GraphQL tracking response")
-                errors = result.get("errors")
-                if errors:
-                    first = (
-                        errors[0]
-                        if isinstance(errors, list) and isinstance(errors[0], dict)
-                        else {}
-                    )
-                    extension = first.get("extensions", {})
-                    raw_code = extension.get("code") if isinstance(extension, dict) else None
-                    code = raw_code if isinstance(raw_code, str) else None
-                    status = {
-                        "UNAUTHENTICATED": 401,
-                        "FORBIDDEN": 403,
-                        "NOT_FOUND": 404,
-                        "CONFLICT": 409,
-                        "RATE_LIMITED": 429,
-                        "SERVICE_UNAVAILABLE": 503,
-                        "INTERNAL_SERVER_ERROR": 500,
-                    }.get(code, 400)
-                    failure = TrackingError(
-                        f"GraphQL tracking request rejected ({code or 'invalid response'})",
-                        status=status,
-                        code=code,
-                    )
-                    server_wait = (
-                        _retry_after(extension.get("retryAfter"))
-                        if isinstance(extension, dict)
-                        else None
-                    )
-                    if server_wait is not None:
-                        wait = server_wait
-                else:
-                    data = result.get("data")
-                    value = data.get(field) if isinstance(data, dict) else None
-                    if not isinstance(value, dict):
-                        raise TrackingError("Missing GraphQL tracking acknowledgment")
-                    if operation == "SDKIngest":
-                        accepted, duplicates = (
-                            value.get("accepted"),
-                            value.get("duplicates"),
-                        )
-                        events = body.get("events")
-                        if (
-                            not isinstance(accepted, int)
-                            or isinstance(accepted, bool)
-                            or not isinstance(duplicates, int)
-                            or isinstance(duplicates, bool)
-                            or accepted < 0
-                            or duplicates < 0
-                            or not isinstance(events, list)
-                            or accepted + duplicates != len(events)
-                            or value.get("requestId") != body.get("requestId")
-                            or not isinstance(value.get("requestId"), str)
-                        ):
-                            raise TrackingError("Invalid GraphQL batch acknowledgment")
-                    return value
-            except HTTPError as error:
-                failure = TrackingError(
-                    f"Tracking request rejected (HTTP {error.code})", status=error.code
-                )
-                server_wait = _retry_after(error.headers.get("Retry-After"))
-                if server_wait is not None:
-                    wait = server_wait
-            except (URLError, TimeoutError, OSError):
-                failure = TrackingError("Tracking connection failed")
-            except (ValueError, UnicodeError):
-                raise TrackingError("Invalid GraphQL tracking response") from None
-            if failure is not None and (
-                not retry or failure.status not in {None, 408, 429, 500, 502, 503, 504}
-            ):
-                raise failure from None
+                return self._attempt(operation, body, payload, min(10, remaining))
+            except _RequestFailure as failure:
+                if not retry or failure.status not in {
+                    None,
+                    408,
+                    429,
+                    500,
+                    502,
+                    503,
+                    504,
+                }:
+                    raise TrackingError(
+                        str(failure), status=failure.status, code=failure.code
+                    ) from None
+                if failure.retry_after is not None:
+                    wait = failure.retry_after
             if time.monotonic() + wait >= deadline:
                 raise TrackingError("Tracking retry deadline exceeded") from None
             time.sleep(wait)
             delay = min(delay * 2, 5)
+
+    def _attempt(
+        self,
+        operation: TrackingOperation,
+        body: Mapping[str, object],
+        payload: bytes,
+        timeout: float,
+    ) -> dict[str, object]:
+        try:
+            response = self._client.post(
+                self.url,
+                content=payload,
+                timeout=httpx.Timeout(timeout),
+                headers={
+                    "Authorization": self._scheme + " " + self.token,
+                    "Content-Type": "application/json",
+                    "Accept": "application/graphql-response+json, application/json",
+                    "User-Agent": self._user_agent,
+                },
+            )
+        except (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError):
+            raise _RequestFailure("Tracking connection failed") from None
+        except httpx.HTTPError:
+            raise TrackingError("Tracking HTTP request failed") from None
+        if not 200 <= response.status_code < 300:
+            raise _RequestFailure(
+                f"Tracking request rejected (HTTP {response.status_code})",
+                status=response.status_code,
+                retry_after=_retry_after(response.headers.get("Retry-After")),
+            )
+        try:
+            result = response.json()
+        except (ValueError, UnicodeError):
+            raise TrackingError("Invalid GraphQL tracking response") from None
+        if not isinstance(result, dict):
+            raise TrackingError("Invalid GraphQL tracking response")
+        errors = result.get("errors")
+        if errors:
+            first = errors[0] if isinstance(errors, list) and isinstance(errors[0], dict) else {}
+            extension = first.get("extensions", {})
+            raw_code = extension.get("code") if isinstance(extension, dict) else None
+            code = raw_code if isinstance(raw_code, str) else None
+            status = {
+                "UNAUTHENTICATED": 401,
+                "FORBIDDEN": 403,
+                "NOT_FOUND": 404,
+                "CONFLICT": 409,
+                "RATE_LIMITED": 429,
+                "SERVICE_UNAVAILABLE": 503,
+                "INTERNAL_SERVER_ERROR": 500,
+            }.get(code, 400)
+            raise _RequestFailure(
+                f"GraphQL tracking request rejected ({code or 'invalid response'})",
+                status=status,
+                code=code,
+                retry_after=_retry_after(extension.get("retryAfter"))
+                if isinstance(extension, dict)
+                else None,
+            )
+        field = OPERATIONS[operation][0]
+        data = result.get("data")
+        value = data.get(field) if isinstance(data, dict) else None
+        if not isinstance(value, dict):
+            raise TrackingError("Missing GraphQL tracking acknowledgment")
+        if operation == "SDKIngest":
+            accepted, duplicates = value.get("accepted"), value.get("duplicates")
+            events = body.get("events")
+            if (
+                not isinstance(accepted, int)
+                or isinstance(accepted, bool)
+                or not isinstance(duplicates, int)
+                or isinstance(duplicates, bool)
+                or accepted < 0
+                or duplicates < 0
+                or not isinstance(events, list)
+                or accepted + duplicates != len(events)
+                or value.get("requestId") != body.get("requestId")
+                or not isinstance(value.get("requestId"), str)
+            ):
+                raise TrackingError("Invalid GraphQL batch acknowledgment")
+        return value

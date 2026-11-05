@@ -10,6 +10,7 @@ import unicodedata
 import uuid
 import warnings
 from collections import deque
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from types import TracebackType
 from urllib.parse import urljoin
@@ -87,102 +88,107 @@ class Run:
         api_token: str | None = None,
     ) -> None:
         self._writer = str(uuid.uuid4())
-        managed_url = os.environ.get("HYPEROPTIMIZER_TRACKING_URL")
-        self._managed = managed_url is not None
-        if self._managed:
-            if (
-                api_url is not None
-                or api_token is not None
-                or experiment_name is not None
-                or resume
-                or metric_policies is not None
-            ):
-                raise ValueError("Managed runs use the injected destination and credential")
-            for provided, env in [
-                (project, "HYPEROPTIMIZER_PROJECT_ID"),
-                (experiment_id, "HYPEROPTIMIZER_EXPERIMENT_ID"),
-                (run_id, "HYPEROPTIMIZER_RUN_ID"),
-            ]:
-                if provided is not None and provided != os.environ.get(env):
-                    raise ValueError("Destination conflicts with managed execution")
-            token = os.environ.get("HYPEROPTIMIZER_TRACKING_TOKEN")
-            self._writer = os.environ["HYPEROPTIMIZER_WRITER_ID"]
-            if not token:
-                raise ValueError("Managed execution must inject its tracking credential")
-            self._transport = Transport(managed_url, token, managed=True)
-            identity = self._transport.request("SDKBind", {})
-        else:
-            policies = metric_policies or {}
-            for path, policy in policies.items():
-                _path(path)
-                if policy not in {"last", "min", "max", "mean", "explicit"}:
-                    raise ValueError("Invalid metric aggregation policy")
-            if metric_policies is not None and experiment_id is not None:
-                raise ValueError("Set policies when creating an experiment by name")
-            self._transport = Transport(api_url, api_token)
-            project = project or os.environ.get("HYPEROPTIMIZER_PROJECT_ID")
-            if project is None or not re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", project):
-                raise ValueError("Supply a project ID or set HYPEROPTIMIZER_PROJECT_ID")
-            if experiment_id is None:
-                if not experiment_name:
-                    raise ValueError("Supply experiment_name or experiment_id")
-                experiment = self._transport.request(
-                    "SDKEnsureExperiment",
-                    {
-                        "projectId": project,
-                        "name": experiment_name,
-                        "metrics": [
-                            {"key": path, "aggregation": policy}
-                            for path, policy in policies.items()
-                        ],
-                    },
-                )
-                experiment_id = str(experiment["id"])
-            elif not re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", experiment_id):
-                raise ValueError("Invalid experiment ID")
-            scope = {"projectId": project, "experimentId": experiment_id}
-            if resume:
-                if not run_id or not re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", run_id):
-                    raise ValueError("Resume requires a run ID")
-                identity = self._transport.request(
-                    "SDKResume", {**scope, "runId": run_id, "writerId": self._writer}
-                )
+        with ExitStack() as cleanup:
+            managed_url = os.environ.get("HYPEROPTIMIZER_TRACKING_URL")
+            self._managed = managed_url is not None
+            if self._managed:
+                if (
+                    api_url is not None
+                    or api_token is not None
+                    or experiment_name is not None
+                    or resume
+                    or metric_policies is not None
+                ):
+                    raise ValueError("Managed runs use the injected destination and credential")
+                for provided, env in [
+                    (project, "HYPEROPTIMIZER_PROJECT_ID"),
+                    (experiment_id, "HYPEROPTIMIZER_EXPERIMENT_ID"),
+                    (run_id, "HYPEROPTIMIZER_RUN_ID"),
+                ]:
+                    if provided is not None and provided != os.environ.get(env):
+                        raise ValueError("Destination conflicts with managed execution")
+                token = os.environ.get("HYPEROPTIMIZER_TRACKING_TOKEN")
+                self._writer = os.environ["HYPEROPTIMIZER_WRITER_ID"]
+                if not token:
+                    raise ValueError("Managed execution must inject its tracking credential")
+                self._transport = Transport(managed_url, token, managed=True)
+                cleanup.callback(self._transport.close)
+                identity = self._transport.request("SDKBind", {})
             else:
-                if run_id is not None:
-                    raise ValueError("Use resume=True to attach to an existing run")
-                body: dict[str, object] = {
-                    **scope,
-                    "writerId": self._writer,
-                    "requestId": str(uuid.uuid4()),
-                }
-                if name is not None:
-                    body["name"] = name
-                identity = self._transport.request("SDKCreateRun", body)
-        self.id = str(identity["id"])
-        self.experiment_id = str(identity["experimentId"])
-        self.project_id = str(identity["projectId"])
-        self._scope = {
-            "projectId": self.project_id,
-            "experimentId": self.experiment_id,
-            "runId": self.id,
-        }
-        self._url = urljoin(
-            os.environ.get("HYPEROPTIMIZER_APP_URL", "https://app.hyperoptimizer.com"),
-            str(identity["url"]),
-        )
-        self._condition = threading.Condition()
-        self._queue: deque[tuple[dict[str, object], bytes]] = deque()
-        self._bytes = 0
-        self._inflight = False
-        self._error: Exception | None = None
-        self._closed = False
-        self._closing = False
-        self._stop = False
-        self._flush_requested = False
-        self._thread = threading.Thread(
-            target=self._upload, name="hyperoptimizer-upload", daemon=True
-        )
-        self._thread.start()
+                policies = metric_policies or {}
+                for path, policy in policies.items():
+                    _path(path)
+                    if policy not in {"last", "min", "max", "mean", "explicit"}:
+                        raise ValueError("Invalid metric aggregation policy")
+                if metric_policies is not None and experiment_id is not None:
+                    raise ValueError("Set policies when creating an experiment by name")
+                self._transport = Transport(api_url, api_token)
+                cleanup.callback(self._transport.close)
+                project = project or os.environ.get("HYPEROPTIMIZER_PROJECT_ID")
+                if project is None or not re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", project):
+                    raise ValueError("Supply a project ID or set HYPEROPTIMIZER_PROJECT_ID")
+                if experiment_id is None:
+                    if not experiment_name:
+                        raise ValueError("Supply experiment_name or experiment_id")
+                    experiment = self._transport.request(
+                        "SDKEnsureExperiment",
+                        {
+                            "projectId": project,
+                            "name": experiment_name,
+                            "metrics": [
+                                {"key": path, "aggregation": policy}
+                                for path, policy in policies.items()
+                            ],
+                        },
+                    )
+                    experiment_id = str(experiment["id"])
+                elif not re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", experiment_id):
+                    raise ValueError("Invalid experiment ID")
+                scope = {"projectId": project, "experimentId": experiment_id}
+                if resume:
+                    if not run_id or not re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", run_id):
+                        raise ValueError("Resume requires a run ID")
+                    identity = self._transport.request(
+                        "SDKResume",
+                        {**scope, "runId": run_id, "writerId": self._writer},
+                    )
+                else:
+                    if run_id is not None:
+                        raise ValueError("Use resume=True to attach to an existing run")
+                    body: dict[str, object] = {
+                        **scope,
+                        "writerId": self._writer,
+                        "requestId": str(uuid.uuid4()),
+                    }
+                    if name is not None:
+                        body["name"] = name
+                    identity = self._transport.request("SDKCreateRun", body)
+            self.id = str(identity["id"])
+            self.experiment_id = str(identity["experimentId"])
+            self.project_id = str(identity["projectId"])
+            self._scope = {
+                "projectId": self.project_id,
+                "experimentId": self.experiment_id,
+                "runId": self.id,
+            }
+            self._url = urljoin(
+                os.environ.get("HYPEROPTIMIZER_APP_URL", "https://app.hyperoptimizer.com"),
+                str(identity["url"]),
+            )
+            self._condition = threading.Condition()
+            self._queue: deque[tuple[dict[str, object], bytes]] = deque()
+            self._bytes = 0
+            self._inflight = False
+            self._error: Exception | None = None
+            self._closed = False
+            self._closing = False
+            self._stop = False
+            self._flush_requested = False
+            self._thread = threading.Thread(
+                target=self._upload, name="hyperoptimizer-upload", daemon=True
+            )
+            self._thread.start()
+            cleanup.pop_all()
 
     def _enqueue(self, events: list[dict[str, object]]) -> None:
         # Encode each wire event once. The parsed copy freezes user-owned nested objects.
@@ -277,6 +283,14 @@ class Run:
         self._tags(tags, group_tags, "remove")
 
     def _upload(self) -> None:
+        try:
+            self._upload_events()
+        finally:
+            with self._condition:
+                if self._stop or self._error is not None:
+                    self._transport.close()
+
+    def _upload_events(self) -> None:
         last_heartbeat = time.monotonic()
         while True:
             body: dict[str, object] | None
@@ -373,6 +387,8 @@ class Run:
             self._stop = True
             self._condition.notify_all()
         self._thread.join(timeout=max(0, deadline - time.monotonic()))
+        if not self._thread.is_alive():
+            self._transport.close()
 
     def get_run_url(self) -> str:
         return self._url
@@ -386,14 +402,23 @@ class Run:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        if exc_type is None:
-            self.close()
-        else:
-            try:
-                self.close(status="failed")
-            except Exception:
-                warnings.warn(
-                    "Tracking close failed while handling the training exception",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+        try:
+            if exc_type is None:
+                self.close()
+            else:
+                try:
+                    self.close(status="failed")
+                except Exception:
+                    warnings.warn(
+                        "Tracking close failed while handling the training exception",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+        finally:
+            with self._condition:
+                self._closing = True
+                self._stop = True
+                self._condition.notify_all()
+            # An in-flight worker closes its own client when it exits.
+            if not self._thread.is_alive():
+                self._transport.close()

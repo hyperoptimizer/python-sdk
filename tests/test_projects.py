@@ -30,3 +30,24 @@ class ProjectTests(unittest.TestCase):
             project = create_project(name="New")
             self.assertEqual(project.name, "New")
             self.assertEqual(request.call_args.args[0], "SDKCreateProject")
+
+    def test_transport_is_closed_on_success_and_failed_workspace_check(self):
+        for workspace in (None, "wrong"):
+            with (
+                patch.dict(os.environ, {"HYPEROPTIMIZER_API_TOKEN": "test"}, clear=True),
+                patch(
+                    "hyperoptimizer.projects.Transport.request",
+                    return_value={
+                        "id": "project",
+                        "name": "New",
+                        "organizationId": "actual",
+                    },
+                ),
+                patch("hyperoptimizer.projects.Transport.close") as close,
+            ):
+                if workspace is None:
+                    create_project(name="New")
+                else:
+                    with self.assertRaises(ValueError):
+                        create_project(name="New", workspace=workspace)
+                close.assert_called_once()

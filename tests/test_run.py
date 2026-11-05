@@ -268,6 +268,73 @@ class RunTests(unittest.TestCase):
             6,
         )
 
+    def test_failed_initialization_closes_transport(self):
+        with patch("hyperoptimizer.run.Transport.close") as close:
+            with self.assertRaises(ValueError):
+                Run(project="invalid", experiment_name="training")
+            close.assert_called_once()
+
+    def test_completion_can_be_retried_without_closing_client_early(self):
+        run = self.run_instance()
+        original = self.request
+        failed = False
+
+        def complete(path, body, **kwargs):
+            nonlocal failed
+            if path == "SDKComplete" and not failed:
+                failed = True
+                raise TrackingError("completion failed")
+            return original(path, body, **kwargs)
+
+        with patch("hyperoptimizer.run.Transport.request", side_effect=complete):
+            with self.assertRaises(TrackingError):
+                run.close()
+            self.assertFalse(run._transport._client.is_closed)
+            run.close()
+        self.assertTrue(run._transport._client.is_closed)
+        self.assertFalse(run._thread.is_alive())
+
+    def test_context_exit_cleans_up_after_failed_completion(self):
+        run = self.run_instance()
+        with patch("hyperoptimizer.run.Transport.request", side_effect=TrackingError("failed")):
+            with self.assertRaises(TrackingError):
+                with run:
+                    pass
+        run._thread.join(timeout=2)
+        self.assertFalse(run._thread.is_alive())
+        self.assertTrue(run._transport._client.is_closed)
+
+    def test_context_exit_does_not_close_an_inflight_upload(self):
+        entered = threading.Event()
+        release = threading.Event()
+        run = self.run_instance()
+        original = self.request
+
+        def upload(path, body, **kwargs):
+            if path == "SDKIngest":
+                entered.set()
+                if not release.wait(2):
+                    raise AssertionError("Upload was not released")
+                self.assertFalse(run._transport._client.is_closed)
+            return original(path, body, **kwargs)
+
+        with patch("hyperoptimizer.run.Transport.request", side_effect=upload):
+            try:
+                run.log_metrics({"loss": 1}, step=0)
+                with run._condition:
+                    run._flush_requested = True
+                    run._condition.notify_all()
+                self.assertTrue(entered.wait(2))
+                with patch.object(run, "close", side_effect=TrackingError("timeout")):
+                    with self.assertRaises(TrackingError):
+                        run.__exit__(None, None, None)
+                self.assertFalse(run._transport._client.is_closed)
+            finally:
+                release.set()
+                run._thread.join(timeout=2)
+        self.assertFalse(run._thread.is_alive())
+        self.assertTrue(run._transport._client.is_closed)
+
 
 if __name__ == "__main__":
     unittest.main()

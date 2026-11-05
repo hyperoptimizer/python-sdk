@@ -7,7 +7,7 @@
 
 Track Python experiments with [HyperOptimizer](https://hyperoptimizer.com).
 Log metrics, parameters, histograms, and results from your training code, then
-explore your runs in the dashboard. Python 3.10+, with no runtime dependencies.
+explore your runs in the dashboard. Requires Python 3.10+; uses HTTPX for pooled HTTP connections.
 
 [Documentation](https://docs.hyperoptimizer.com/guides/python-tracking) ·
 [Dashboard](https://app.hyperoptimizer.com) ·
@@ -187,7 +187,11 @@ export HYPEROPTIMIZER_APP_URL="http://127.0.0.1:3003"
 Events upload in the background, normally every second or when 500 events are
 queued. `run.flush()` waits for pending events to be acknowledged;
 `run.close()` also finalizes the run and is safe to call more than once.
-Both raise `hyperoptimizer.TrackingError` if delivery fails.
+Both raise `hyperoptimizer.TrackingError` if delivery fails. Timeout values bound
+individual network phases and retry scheduling, rather than guaranteeing strict
+wall-clock cancellation. The SDK honors environment proxy settings and the
+platform/OpenSSL certificate configuration. Requests identify the SDK version and
+operating system, for example `hyperoptimizer-python/0.1.0/linux`.
 
 - **Buffering:** up to 10,000 events or 16 MiB in memory, with bounded
   backpressure. Abrupt termination can lose buffered events; there is no disk queue.

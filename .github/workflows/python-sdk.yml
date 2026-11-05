@@ -8,14 +8,27 @@ on:
 permissions:
   contents: read
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install .
+      - run: python -m unittest discover -s tests -v
   build:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install build==1.3.0 twine==6.2.0
+      - run: pip install -e . build==1.3.0 twine==6.2.0
       - run: python -m unittest discover -s tests -v
         env:
           PYTHONPATH: .
@@ -46,9 +59,8 @@ jobs:
       - name: Verify version tag
         run: |
           python - <<'PYTHON'
-          import os, tomllib
-          from pathlib import Path
-          version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
+          import os, runpy
+          version = runpy.run_path('hyperoptimizer/_version.py')['__version__']
           assert os.environ['GITHUB_REF_NAME'] == 'v' + version
           PYTHON
       - uses: actions/download-artifact@v4

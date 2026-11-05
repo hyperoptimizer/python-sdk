@@ -25,11 +25,11 @@ def create_project(
         raise ValueError("Managed trial credentials cannot create projects")
     if not name.strip() or len(name) > 255:
         raise ValueError("Project name must have 1–255 characters")
-    transport = Transport(api_url, api_token)
-    if workspace is not None:
-        identity = transport.request("SDKIdentity", {})
-        if identity.get("organizationId") != workspace:
-            raise ValueError("Workspace must match the token's organization")
-    body: dict[str, object] = {"name": name, "description": description}
-    result = transport.request("SDKCreateProject", body, retry=False)
-    return Project(str(result["id"]), str(result["name"]))
+    with Transport(api_url, api_token) as transport:
+        if workspace is not None:
+            identity = transport.request("SDKIdentity", {})
+            if identity.get("organizationId") != workspace:
+                raise ValueError("Workspace must match the token's organization")
+        body: dict[str, object] = {"name": name, "description": description}
+        result = transport.request("SDKCreateProject", body, retry=False)
+        return Project(str(result["id"]), str(result["name"]))
