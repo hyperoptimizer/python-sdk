@@ -1,112 +1,234 @@
-# HyperOptimizer Python tracking
+# HyperOptimizer Python SDK
 
-Python 3.10+ with no runtime dependencies. All SDK calls use the new `/graphql`
-endpoint; there is no REST or old-API fallback. Install the published package, or use `pip install .` from this repository:
+[![PyPI](https://img.shields.io/pypi/v/hyperoptimizer)](https://pypi.org/project/hyperoptimizer/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB)](https://pypi.org/project/hyperoptimizer/)
+[![Tests](https://github.com/hyperoptimizer/python-sdk/actions/workflows/python-sdk.yml/badge.svg)](https://github.com/hyperoptimizer/python-sdk/actions/workflows/python-sdk.yml)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+Track Python experiments with [HyperOptimizer](https://hyperoptimizer.com).
+Log metrics, parameters, histograms, and results from your training code, then
+explore your runs in the dashboard. Python 3.10+, with no runtime dependencies.
+
+[Documentation](https://docs.hyperoptimizer.com/guides/python-tracking) ·
+[Dashboard](https://app.hyperoptimizer.com) ·
+[PyPI](https://pypi.org/project/hyperoptimizer/) ·
+[Issues](https://github.com/hyperoptimizer/python-sdk/issues)
+
+## Installation
 
 ```sh
-pip install hyperoptimizer==0.1.0
-export HYPEROPTIMIZER_API_URL=http://127.0.0.1:8186
-export HYPEROPTIMIZER_APP_URL=http://127.0.0.1:3003
-# Supply a key from the new dashboard's API Keys page:
-export HYPEROPTIMIZER_API_TOKEN=ho_your_org_token
+pip install hyperoptimizer
 ```
 
-The default deployment target is `https://graphql.hyperoptimizer.com/graphql`.
-Version 0.1.0 is available on [PyPI](https://pypi.org/project/hyperoptimizer/0.1.0/). Both an origin and an explicit
-`/graphql` endpoint are accepted. Remote public endpoints require HTTPS; loopback
-HTTP is supported. Tokens and caller-provided organization headers do not select
-arbitrary organizations: the server derives ownership from the verified credential.
+## Getting started
+
+Create an API key from the **API Keys** page in the
+[dashboard](https://app.hyperoptimizer.com), then set it in your environment:
+
+```sh
+export HYPEROPTIMIZER_API_TOKEN="ho_your_org_token"
+```
+
+The example below needs `projects:write`, `experiments:write`, and
+`tracking:write` scopes. External tracking requires an active paid subscription.
 
 ```python
 from hyperoptimizer import Run
 from hyperoptimizer.projects import create_project
-from hyperoptimizer.types import Histogram
 
-project = create_project(name="project-x")
+project = create_project(name="my-first-project")
+
 with Run(project=project.id, experiment_name="training") as run:
-    run.log_configs({"parameters/learning_rate": 0.001, "dataset": {"version": 2}})
-    for step in range(3):
-        run.log_metrics({"metrics/accuracy": 0.8 + step * 0.05}, step=step)
-        run.log_histograms({"activations": Histogram([0, 1, 2], [4, 6])}, step=step)
+    run.log_configs({
+        "parameters/learning_rate": 0.001,
+        "parameters/batch_size": 32,
+    })
+
+    for step in range(10):
+        run.log_metrics({"loss": 1.0 / (step + 1)}, step=step)
+
     run.add_tags(["baseline"])
     print(run.get_run_url())
 ```
 
-Use `tracking:write` to create runs and upload, `experiments:write` when resolving
-an experiment by name, and `projects:write` for project creation. These do not
-require read scopes. With existing project/experiment IDs, `tracking:write` is
-sufficient. `create_project(workspace=...)` checks the key's organization before
-creating anything. External tracking requires an active paid subscription; it
-does not create or bill managed compute.
+Open the printed URL to view your run. The `with` block flushes pending events
+and closes the run automatically. If your code raises an exception, the SDK
+attempts to mark the run as failed and preserves the original exception.
 
-`HYPEROPTIMIZER_PROJECT_ID` supplies the default project. Select an existing
-experiment with `Run(project=..., experiment_id=...)`. Experiment names resolve
-idempotently within the project. Set aggregation policies on first creation:
+## Usage
+
+### Use an existing project or experiment
+
+Set a default project to avoid passing its ID each time:
+
+```sh
+export HYPEROPTIMIZER_PROJECT_ID="your_project_id"
+```
 
 ```python
-with Run(project=project.id, experiment_name="scoring",
-         metric_policies={"loss": "min", "score": "explicit"}) as run:
+from hyperoptimizer import Run
+
+with Run(experiment_name="training") as run:
+    run.log_metrics({"accuracy": 0.92}, step=0)
+```
+
+Experiment names are resolved within the project: reusing a name reuses the
+experiment. You can also pass `experiment_id` instead of `experiment_name`.
+With existing project and experiment IDs, only `tracking:write` is required.
+
+### Log parameters and configuration
+
+Use the `parameters/` prefix for string, numeric, and boolean parameters.
+Other fields can contain structured JSON, including `null` (`None` in Python).
+The following logging examples use an open `run` from a `with Run(...)` block.
+
+```python
+run.log_configs({
+    "parameters/learning_rate": 0.001,
+    "parameters/use_dropout": True,
+    "dataset": {"name": "mnist", "version": 2},
+})
+```
+
+### Log metrics and histograms
+
+Record scalar metrics at a nonnegative integer step. Use slash-separated paths
+for related fields.
+
+```python
+from hyperoptimizer.types import Histogram
+
+run.log_metrics({"train/loss": 0.25, "validation/accuracy": 0.92}, step=10)
+run.log_histograms({
+    "activations": Histogram(bin_edges=[0, 1, 2], counts=[4, 6]),
+}, step=10)
+```
+
+A histogram needs one more bin edge than count, with strictly increasing edges
+and nonnegative integer counts. Each histogram supports 1–256 bins.
+
+### Set final metric policies
+
+Choose how metrics are summarized when first creating an experiment. Using
+`project` from the getting-started example:
+
+```python
+with Run(
+    project=project.id,
+    experiment_name="scoring",
+    metric_policies={"loss": "min", "score": "explicit"},
+) as run:
     run.log_metrics({"loss": 0.25}, step=10)
     run.log_results({"score": 0.9})
 ```
 
-Policies are immutable per-run snapshots: `last` means highest step; `min`, `max`,
-`mean` and write-once `explicit` are supported. Conflicting experiment policies
-are rejected. Close freezes every recorded scalar metric in `RunFinalMetric`;
-reads never replace a missing frozen value with a live summary.
+| Policy | Final value |
+| --- | --- |
+| `last` | Value at the highest step |
+| `min` | Lowest recorded value |
+| `max` | Highest recorded value |
+| `mean` | Mean of recorded values |
+| `explicit` | Write-once result supplied with `log_results()` |
 
-`log_configs({"parameters/key": value})` uses typed `RunParameter` columns for
-string, finite number and boolean values. Other configurations retain structured
-JSON, including null. Values are limited to 64 KiB each and 1 MiB total; a run has
-at most 1,000 fields. Paths preserve case and slash namespaces, with reserved
-`sys`/`system` and unsafe object keys rejected. Managed parameter assignments
-cannot be overwritten. Regular/group tags use the unified assignments.
+Policies are fixed for each run, and conflicting policies on an existing
+experiment are rejected. Closing a run freezes its final metrics.
 
-One run has one writer. Resume a lost external run after its five-minute lease
-expires using `Run(project=..., experiment_id=..., run_id=..., resume=True)`.
-Closed runs cannot reopen. External status comes from the SDK; managed execution
-status belongs to the platform.
+### Organize runs with tags
 
-Uploads occur at least every second or at 500 queued events. The queue holds at
-most 10,000 events/16 MiB with bounded backpressure. Request/event identities stay
-unchanged during retries. `flush()` and `close()` wait for acknowledgements and
-raise `TrackingError` on failure. Repeated close is safe. Context-manager cleanup
-preserves the original training exception. Abrupt termination can lose buffered
-events; there is no disk queue.
+Inside an open run:
 
-The bulk mutation is `ingestRunEvents`. One ordered batch can mix scalar samples,
-histograms, configuration, explicit results and tag changes. Its `@oneOf` input
-requires exactly one event variant per entry, with the event UUID inside that
-variant. Each batch contains 1–500 entries and fits the 1 MiB HTTP limit, measured
-using the actual UTF-8 GraphQL envelope. A final one-entry flush is valid.
-Only the selected generated operation is sent. An acknowledgement must match the
-request ID and account for every entry before the SDK removes buffered events.
-The server commits the entire batch atomically; conflicting replays save nothing.
+```python
+run.add_tags(["baseline", "resnet"])
+run.remove_tags(["baseline"])
+run.add_tags(["ablation-study"], group_tags=True)
+```
 
-Steps/counts use lossless GraphQL BigInt strings with the SDK's nonnegative
-safe-integer limit. Observation timestamps retain all six microsecond digits.
-A path/step sample is immutable: identical replay is acknowledged, conflicting
-values roll back the entire batch. Scalars reject booleans, NaN and infinity.
-Histograms support 1–256 bins and retain the 100 greatest-step snapshots. Scalar
-history stays in TimescaleDB; cumulative summaries survive retention. Retained
-payloads/receipts are limited to 1 GiB per organization and accounted on deletion.
-Completion and acknowledged replay remain available after subscription loss.
+### Resume an interrupted run
 
-For SDK-mode managed execution, `Run()` consumes injected tracking URL, token and
-writer ID. It sends `Authorization: Tracking <JWT>` to the same GraphQL endpoint.
-The new API verifies its dedicated issuer/audience/HS256 signature, expiry and
-current run/attempt/writer binding. These credentials cannot create projects,
-query records or write other runs. Closing telemetry never changes the observed
-execution status. The signing key is `GRAPHQL_TRACKING_SIGNING_KEY` and has no
-fallback to Clerk, API keys or the old service's secret.
+A run has one active writer. After an interrupted run's five-minute writer
+lease expires, resume it using its project, experiment, and run IDs:
 
-The actual Hatchet/Kubernetes workers have not yet been migrated to issue these
-new credentials or report terminal observations. The managed SDK protocol is
-tested with explicit fixtures; no actual managed optimization has been run on
-this stack. Stdout ingestion, worker finalization/reconciliation and metering
-remain part of that separate migration.
+```python
+with Run(
+    project="your_project_id",
+    experiment_id="your_experiment_id",
+    run_id="your_run_id",
+    resume=True,
+) as run:
+    run.log_metrics({"loss": 0.18}, step=11)
+```
 
-Run `pnpm --filter graphql.hyperoptimizer.com test:sdk` for actual Python-client,
-HTTP, Prisma and TimescaleDB integration tests. `pnpm check:tracking-sdk` validates
-the bundled `operations.graphql` against the exported schema. Unit tests preserve
-queue, retry, backpressure and exception behavior. This change publishes no package.
+Closed runs cannot be reopened. Save `run.id`, `run.project_id`, and
+`run.experiment_id` alongside your training checkpoint if you need to resume.
+
+## Configuration
+
+| Environment variable | Purpose | Default |
+| --- | --- | --- |
+| `HYPEROPTIMIZER_API_TOKEN` | Organization API key | Required for external tracking |
+| `HYPEROPTIMIZER_PROJECT_ID` | Default project ID | Pass `project` to `Run()` otherwise |
+| `HYPEROPTIMIZER_API_URL` | API origin or full GraphQL endpoint | `https://graphql.hyperoptimizer.com` |
+| `HYPEROPTIMIZER_APP_URL` | Dashboard origin for run links | `https://app.hyperoptimizer.com` |
+
+You can also pass `api_token` and `api_url` directly to `Run()` or
+`create_project()`. API keys determine the organization; an optional
+`create_project(workspace=...)` value must match the key's organization.
+
+All SDK requests use `/graphql`. Public endpoints require HTTPS; loopback HTTP
+is supported for local development:
+
+```sh
+export HYPEROPTIMIZER_API_URL="http://127.0.0.1:8186"
+export HYPEROPTIMIZER_APP_URL="http://127.0.0.1:3003"
+```
+
+## Delivery and limits
+
+Events upload in the background, normally every second or when 500 events are
+queued. `run.flush()` waits for pending events to be acknowledged;
+`run.close()` also finalizes the run and is safe to call more than once.
+Both raise `hyperoptimizer.TrackingError` if delivery fails.
+
+- **Buffering:** up to 10,000 events or 16 MiB in memory, with bounded
+  backpressure. Abrupt termination can lose buffered events; there is no disk queue.
+- **Retries:** event identities are preserved. Identical replays are acknowledged;
+  conflicting values for the same metric path and step are rejected.
+- **Values:** scalar metrics must be finite numbers, excluding booleans. Steps
+  and histogram counts range from `0` to `2**53 - 1`.
+- **Configuration:** up to 64 KiB per value, 1 MiB total, and 1,000 fields per run.
+  Paths preserve case; `sys` and `system` are reserved namespaces.
+- **Histograms:** the 100 snapshots with the greatest steps are retained per field.
+
+<details>
+<summary>Managed execution status</summary>
+
+The SDK supports `Run()` with platform-injected tracking credentials, scoped to
+one managed run. These credentials cannot create projects or write to other
+runs, and closing telemetry does not change the platform's execution status.
+
+Worker integration is still pending. The managed SDK protocol is tested with
+fixtures; end-to-end managed optimization has not yet been validated on this
+stack. External tracking does not create or bill managed compute.
+
+</details>
+
+## Development
+
+From a local checkout:
+
+```sh
+pip install -e .
+python -m unittest discover -s tests -v
+```
+
+In the platform monorepo, `pnpm --filter graphql.hyperoptimizer.com test:sdk`
+runs the Python-client integration tests, and `pnpm check:tracking-sdk`
+validates the bundled GraphQL operations against the exported schema.
+
+See [RELEASING.md](RELEASING.md) for package publishing instructions.
+Report bugs and request features through
+[GitHub Issues](https://github.com/hyperoptimizer/python-sdk/issues).
+
+## License
+
+[MIT](LICENSE) © Hyperoptimizer.
