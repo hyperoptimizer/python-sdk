@@ -8,7 +8,7 @@ from hyperoptimizer.projects import create_project
 class ProjectTests(unittest.TestCase):
     def test_wrong_workspace_is_rejected_before_creation(self):
         with (
-            patch.dict(os.environ, {"HYPEROPTIMIZER_API_TOKEN": "ho_test"}, clear=True),
+            patch.dict(os.environ, {"HYPEROPTIMIZER_API_TOKEN": "hyperoptimizer_test"}, clear=True),
             patch(
                 "hyperoptimizer.projects.Transport.request",
                 return_value={"organizationId": "org_actual"},
@@ -21,7 +21,7 @@ class ProjectTests(unittest.TestCase):
 
     def test_project_write_does_not_require_read_scope(self):
         with (
-            patch.dict(os.environ, {"HYPEROPTIMIZER_API_TOKEN": "ho_test"}, clear=True),
+            patch.dict(os.environ, {"HYPEROPTIMIZER_API_TOKEN": "hyperoptimizer_test"}, clear=True),
             patch(
                 "hyperoptimizer.projects.Transport.request",
                 return_value={"id": "project", "name": "New"},

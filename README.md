@@ -28,7 +28,7 @@ Create an API key from the **API Keys** page in the
 [dashboard](https://app.hyperoptimizer.com), then set it in your environment:
 
 ```sh
-export HYPEROPTIMIZER_API_TOKEN="ho_your_org_token"
+export HYPEROPTIMIZER_API_TOKEN="hyperoptimizer_your_org_token"
 ```
 
 The example below needs `projects:write`, `experiments:write`, and

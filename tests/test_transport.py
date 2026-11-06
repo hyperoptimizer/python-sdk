@@ -84,7 +84,7 @@ class GraphQLTransportTests(TransportTestCase):
     def test_graphql_errors_retry_the_identical_envelope_and_never_accept_partial_data(
         self,
     ):
-        transport = Transport("https://graphql.example", "ho_write_only")
+        transport = Transport("https://graphql.example", "hyperoptimizer_write_only")
         transport._opener = self.mock_transport(transport)
         transport._handler.side_effect = [
             httpx.Response(
@@ -106,7 +106,7 @@ class GraphQLTransportTests(TransportTestCase):
         self.assertEqual(sleep.call_args.args, (0,))
 
     def test_graphql_authorization_errors_are_permanent_and_redacted(self):
-        transport = Transport("https://graphql.example", "ho_write_only")
+        transport = Transport("https://graphql.example", "hyperoptimizer_write_only")
         transport._opener = self.mock_transport(transport)
         transport._handler.return_value = httpx.Response(
             200,
@@ -137,9 +137,9 @@ class GraphQLTransportTests(TransportTestCase):
             "http://graphql.example",
         ]:
             with self.subTest(url=url), self.assertRaises(ValueError):
-                Transport(url, "ho_test")
+                Transport(url, "hyperoptimizer_test")
         with (
-            patch.dict("os.environ", {"HYPEROPTIMIZER_API_TOKEN": "ho_fallback"}),
+            patch.dict("os.environ", {"HYPEROPTIMIZER_API_TOKEN": "hyperoptimizer_fallback"}),
             self.assertRaises(ValueError),
         ):
             Transport("https://graphql.example", "")
@@ -154,7 +154,7 @@ class AcknowledgementTests(TransportTestCase):
             {"requestId": "stable", "accepted": 0, "duplicates": 0},
         ]:
             with self.subTest(acknowledgement=acknowledgement):
-                transport = Transport("https://graphql.example", "ho_test")
+                transport = Transport("https://graphql.example", "hyperoptimizer_test")
                 transport._opener = self.mock_transport(transport)
                 transport._handler.return_value = httpx.Response(
                     200,
@@ -169,7 +169,7 @@ class AcknowledgementTests(TransportTestCase):
                 self.assertEqual(transport._handler.call_count, 1)
 
     def test_only_selected_document_is_sent_and_exact_wire_byte_limit_is_enforced(self):
-        transport = Transport("https://graphql.example", "ho_test")
+        transport = Transport("https://graphql.example", "hyperoptimizer_test")
         transport._opener = self.mock_transport(transport)
         acknowledgement = {"requestId": "stable", "accepted": 1, "duplicates": 0}
         transport._handler.return_value = httpx.Response(
@@ -197,7 +197,7 @@ class AcknowledgementTests(TransportTestCase):
         self.assertEqual(transport._handler.call_count, 1)
 
     def test_incomplete_batch_acknowledgement_cannot_drop_buffered_events(self):
-        transport = Transport("https://graphql.example", "ho_test")
+        transport = Transport("https://graphql.example", "hyperoptimizer_test")
         transport._opener = self.mock_transport(transport)
         transport._handler.return_value = httpx.Response(
             200, content=b'{"data":{"ingestRunEvents":{"accepted":0,"duplicates":0}}}'
