@@ -246,8 +246,13 @@ class Transport:
                 "SERVICE_UNAVAILABLE": 503,
                 "INTERNAL_SERVER_ERROR": 500,
             }.get(code, 400)
+            message = f"GraphQL tracking request rejected ({code or 'invalid response'})"
+            # FORBIDDEN carries the API's domain-specific denial reason.
+            api_message = first.get("message")
+            if code == "FORBIDDEN" and isinstance(api_message, str) and api_message.strip():
+                message = api_message
             raise _RequestFailure(
-                f"GraphQL tracking request rejected ({code or 'invalid response'})",
+                message,
                 status=status,
                 code=code,
                 retry_after=_retry_after(extension.get("retryAfter"))

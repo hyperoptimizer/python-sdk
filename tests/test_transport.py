@@ -105,18 +105,77 @@ class GraphQLTransportTests(TransportTestCase):
         self.assertEqual(json.loads(calls[0].args[0].content)["operationName"], "SDKIngest")
         self.assertEqual(sleep.call_args.args, (0,))
 
-    def test_graphql_authorization_errors_are_permanent_and_redacted(self):
-        transport = Transport("https://graphql.example", "hyperoptimizer_write_only")
-        transport._opener = self.mock_transport(transport)
-        transport._handler.return_value = httpx.Response(
-            200,
-            content=b'{"errors":[{"message":"private-input","extensions":{"code":"FORBIDDEN"}}]}',
-        )
-        with self.assertRaises(TrackingError) as raised:
-            transport.request("SDKIngest", {})
-        self.assertEqual(raised.exception.code, "FORBIDDEN")
-        self.assertNotIn("private-input", str(raised.exception))
-        self.assertEqual(transport._handler.call_count, 1)
+    def test_forbidden_errors_preserve_the_api_reason_without_retrying(self):
+        for message in (
+            "An active paid subscription is required for tracking ingestion",
+            "Access denied: missing tracking:write scope",
+            "Workspace tracking storage exceeds its quota",
+            "Tracking credential does not match this run",
+        ):
+            with self.subTest(message=message):
+                transport = Transport("https://graphql.example", "test")
+                handler = self.mock_transport(transport)
+                handler.return_value = httpx.Response(
+                    200,
+                    json={
+                        "errors": [
+                            {
+                                "message": message,
+                                "extensions": {"code": "FORBIDDEN"},
+                            }
+                        ]
+                    },
+                )
+                with self.assertRaises(TrackingError) as raised:
+                    transport.request("SDKIngest", {})
+                self.assertEqual(str(raised.exception), message)
+                self.assertEqual(raised.exception.status, 403)
+                self.assertEqual(raised.exception.code, "FORBIDDEN")
+                self.assertEqual(handler.call_count, 1)
+
+    def test_forbidden_errors_with_missing_or_invalid_messages_use_generic_fallback(self):
+        for message in (None, "", "  ", 42, {"unexpected": "object"}):
+            with self.subTest(message=message):
+                transport = Transport("https://graphql.example", "test")
+                handler = self.mock_transport(transport)
+                handler.return_value = httpx.Response(
+                    200,
+                    json={
+                        "errors": [
+                            {
+                                "message": message,
+                                "extensions": {"code": "FORBIDDEN"},
+                            }
+                        ]
+                    },
+                )
+                with self.assertRaises(TrackingError) as raised:
+                    transport.request("SDKIngest", {})
+                self.assertEqual(
+                    str(raised.exception), "GraphQL tracking request rejected (FORBIDDEN)"
+                )
+                self.assertEqual(handler.call_count, 1)
+
+    def test_authentication_and_internal_error_messages_remain_redacted(self):
+        for code in ("UNAUTHENTICATED", "INTERNAL_SERVER_ERROR", "UNKNOWN_ERROR"):
+            with self.subTest(code=code):
+                transport = Transport("https://graphql.example", "test")
+                handler = self.mock_transport(transport)
+                handler.return_value = httpx.Response(
+                    200,
+                    json={
+                        "errors": [
+                            {
+                                "message": "private-provider-details",
+                                "extensions": {"code": code},
+                            }
+                        ]
+                    },
+                )
+                with self.assertRaises(TrackingError) as raised:
+                    transport.request("SDKIngest", {}, retry=False)
+                self.assertNotIn("private-provider-details", str(raised.exception))
+                self.assertEqual(handler.call_count, 1)
 
     def test_managed_credentials_use_separate_authentication(self):
         transport = Transport("http://graphql-api.namespace.svc:8186", "signed", managed=True)
